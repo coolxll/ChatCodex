@@ -74,15 +74,20 @@ function App() {
   }, [focusedPath, host.view, privateCapabilities.focusedObject]);
 
   useEffect(() => {
-    if (output) return;
+    // Always poll for a pending approval, even when a previous diff output is
+    // already present.  A write_file/apply_patch call parks on the Gateway
+    // approval before it ever returns a fresh output, so gating this poll on
+    // `!output` would leave the approval invisible forever (the widget just
+    // spins).  This mirrors chat.tsx's unconditional polling.
     let stopped = false;
     let timer: number | undefined;
     const refresh = async () => {
       try {
         const status = await OA.callTool<any>("execution_status", {});
         if (stopped) return;
-        setApproval((status?.approvals ?? [])[0] ?? null);
-        if (status?.pending) timer = window.setTimeout(refresh, 1000);
+        const pending = (status?.approvals ?? [])[0] ?? null;
+        setApproval(pending);
+        timer = window.setTimeout(refresh, status?.pending ? 1000 : 3500);
       } catch {
         if (!stopped) timer = window.setTimeout(refresh, 2000);
       }
@@ -92,7 +97,7 @@ function App() {
       stopped = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [output]);
+  }, []);
 
   if (approval) {
     return (

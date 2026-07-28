@@ -43,19 +43,25 @@ def widget_domain(public_url: str) -> str:
 
 def resource_meta(description: str, public_url: str) -> dict:
     """Build standard MCP Apps metadata plus ChatGPT compatibility aliases."""
+    domain = widget_domain(public_url)
+    # The widget calls back into the Gateway (resolve_approval, execution_status
+    # polling).  Declare that origin in the CSP allowlists so ChatGPT treats the
+    # widget as CSP-declared instead of showing the "CSP off" badge.  Without a
+    # public HTTPS domain (plain loopback) there is nothing meaningful to
+    # declare, so the lists stay empty.
+    connect_domains = [domain] if domain else []
     ui = {
         "prefersBorder": False,
-        "csp": {"connectDomains": [], "resourceDomains": []},
+        "csp": {"connectDomains": connect_domains, "resourceDomains": []},
     }
     meta = {
         "ui": ui,
         "openai/widgetDescription": description,
         "openai/widgetPrefersBorder": False,
         "openai/widgetCSP": {
-            "connect_domains": [], "resource_domains": [],
+            "connect_domains": connect_domains, "resource_domains": [],
         },
     }
-    domain = widget_domain(public_url)
     if domain:
         ui["domain"] = domain
         meta["openai/widgetDomain"] = domain
