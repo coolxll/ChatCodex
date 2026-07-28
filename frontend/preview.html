@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ChatCodex Widget Matrix</title>
+<style>
+  :root{color-scheme:light}
+  *{box-sizing:border-box}
+  body{font-family:ui-sans-serif,system-ui;margin:0;background:#f3f4f6;color:#111}
+  body[data-theme="dark"]{color-scheme:dark;background:#101010;color:#fff}
+  .bar{display:flex;gap:8px;align-items:center;padding:10px 14px;background:#fff;border-bottom:1px solid #e5e7eb;flex-wrap:wrap;position:sticky;top:0;z-index:2}
+  body[data-theme="dark"] .bar{background:#181818;border-color:#303030}
+  .bar select,.bar button{padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;background:transparent;color:inherit;cursor:pointer;font-size:13px}
+  .bar button.on{background:#10a37f;color:#fff;border-color:#10a37f}
+  .bar label{display:flex;align-items:center;gap:5px;font-size:12px;color:#666}
+  body[data-theme="dark"] .bar label{color:#aaa}
+  .stage{padding:20px;width:min(var(--stage-width,760px),100%);margin:0 auto}
+  iframe{display:block;width:100%;border:1px solid #d9d9d9;border-radius:12px;background:transparent;min-height:120px}
+  body[data-theme="dark"] iframe{border-color:#303030}
+  .log{padding:10px 14px;font:12px ui-monospace,monospace;color:#6b7280;white-space:pre-wrap;max-height:180px;overflow:auto}
+  .toggle{margin-left:auto;display:flex;gap:4px}
+  h1{margin:0;font-size:14px}
+  @media(max-width:700px){.toggle{margin-left:0}.stage{padding:10px}}
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>Widget Matrix</h1>
+  <label>Widget
+    <select id="widget">
+      <option value="/src/widgets/workspace-setup.tsx">workspace-setup</option>
+      <option value="/src/widgets/ask-user.tsx">ask-user</option>
+      <option value="/src/widgets/approval.tsx">approval</option>
+      <option value="/src/widgets/diff.tsx">diff</option>
+      <option value="/src/widgets/chat.tsx">chat</option>
+    </select>
+  </label>
+  <label>表面
+    <select id="surface">
+      <option value="inline">inline</option>
+      <option value="modal">modal</option>
+      <option value="fullscreen">fullscreen</option>
+      <option value="focused">focused object</option>
+    </select>
+  </label>
+  <label>宽度
+    <select id="width">
+      <option value="320">320</option>
+      <option value="480">480</option>
+      <option value="768" selected>768</option>
+      <option value="1024">1024</option>
+      <option value="1440">1440</option>
+    </select>
+  </label>
+  <label>Fixture <select id="variant"></select></label>
+  <label>宿主
+    <select id="host">
+      <option value="public">public-only</option>
+      <option value="no-modal">public / no modal</option>
+      <option value="private">first-party</option>
+      <option value="broken">partial/broken</option>
+    </select>
+  </label>
+  <label><input id="reduced" type="checkbox" /> reduced motion</label>
+  <div class="toggle">
+    <button id="light" class="on" type="button">light</button>
+    <button id="dark" type="button">dark</button>
+  </div>
+  <button id="reload" type="button">重载</button>
+</div>
+<div class="stage"><iframe id="frame" title="Widget preview"></iframe></div>
+<div class="log" id="log" aria-live="polite"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (...items) => {
+  $("log").textContent += `${items.join(" ")}\n`;
+  $("log").scrollTop = $("log").scrollHeight;
+};
+
+const variants = {
+  "workspace-setup": [["default","new workspace"],["resume","existing workspace"],["linux","Linux path"]],
+  "ask-user": [["one-choice","1 choice"],["one-text","1 text"],["three","3 mixed"],["ten","10 mixed"],["secret","secret"]],
+  approval: [["command","command"],["file","file change"],["permissions","permissions"],["network","network"],["user-input","user input"],["elicitation","MCP elicitation"]],
+  diff: [["normal","normal diff"],["large","large diff"],["codex-patch","Codex patch"]],
+  chat: [["running","running"],["approval","waiting approval"],["complete","complete"],["failed","failed"]],
+};
+
+function widgetName() {
+  return $("widget").selectedOptions[0].textContent;
+}
+
+function fillVariants(preferred) {
+  const options = variants[widgetName()] ?? [["default","default"]];
+  $("variant").replaceChildren(...options.map(([value,label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }));
+  if (preferred && options.some(([value]) => value === preferred)) $("variant").value = preferred;
+}
+
+function hostVariables(theme) {
+  const radius = {
+    "--border-radius-xs":"4px","--border-radius-sm":"6px","--border-radius-md":"8px",
+    "--border-radius-lg":"10px","--border-radius-xl":"12px","--border-radius-full":"9999px",
+    "--border-width-regular":"0.5px",
+  };
+  const font = {
+    "--font-sans":"ui-sans-serif, -apple-system, system-ui, \"Segoe UI\", Helvetica, Arial, sans-serif",
+    "--font-mono":"ui-monospace, SFMono-Regular, \"SF Mono\", Menlo, Consolas, monospace",
+    "--font-weight-normal":"400","--font-weight-medium":"500","--font-weight-semibold":"600","--font-weight-bold":"700",
+    "--font-text-xs-size":"12px","--font-text-sm-size":"14px","--font-text-md-size":"16px","--font-text-lg-size":"18px",
+    "--font-text-xs-line-height":"18px","--font-text-sm-line-height":"20px","--font-text-md-line-height":"24px","--font-text-lg-line-height":"29px",
+    "--font-heading-xs-size":"16px","--font-heading-sm-size":"18px","--font-heading-md-size":"20px","--font-heading-lg-size":"24px",
+    "--font-heading-xs-line-height":"24px","--font-heading-sm-line-height":"26px","--font-heading-md-line-height":"26px",
+  };
+  const colors = theme === "dark" ? {
+    "--color-background-primary":"#212121","--color-background-secondary":"#181818","--color-background-tertiary":"#131313",
+    "--color-background-inverse":"#f3f3f3","--color-text-primary":"#ffffff","--color-text-secondary":"#cdcdcd",
+    "--color-text-tertiary":"#8f8f8f","--color-text-inverse":"#0d0d0d",
+    "--color-border-primary":"rgba(255,255,255,.12)","--color-border-secondary":"rgba(255,255,255,.06)",
+    "--color-border-tertiary":"rgba(255,255,255,.20)","--color-ring-primary":"#3a83f7",
+    "--color-background-danger":"rgba(250,66,62,.16)","--color-text-danger":"#ff6764",
+    "--color-background-warning":"rgba(251,106,34,.16)","--color-text-warning":"#d25e28",
+    "--shadow-hairline":"0 0 0 0.5px rgba(255,255,255,.06)",
+  } : {
+    "--color-background-primary":"#ffffff","--color-background-secondary":"#f9f9f9","--color-background-tertiary":"#f3f3f3",
+    "--color-background-inverse":"#181818","--color-text-primary":"#0d0d0d","--color-text-secondary":"#5d5d5d",
+    "--color-text-tertiary":"#8f8f8f","--color-text-inverse":"#ffffff",
+    "--color-border-primary":"rgba(13,13,13,.10)","--color-border-secondary":"rgba(13,13,13,.05)",
+    "--color-border-tertiary":"rgba(13,13,13,.15)","--color-ring-primary":"#2c67c5",
+    "--color-background-danger":"rgba(250,66,62,.16)","--color-text-danger":"#fa423e",
+    "--color-background-warning":"rgba(251,106,34,.16)","--color-text-warning":"#87401d",
+    "--shadow-hairline":"0 0 0 0.5px rgba(13,13,13,.05)",
+  };
+  return {...radius,...font,...colors};
+}
+
+function makeDiff(fileCount = 2, lines = 4) {
+  let diff = "";
+  for (let file = 1; file <= fileCount; file += 1) {
+    diff += `diff --git a/src/file-${file}.ts b/src/file-${file}.ts\n--- a/src/file-${file}.ts\n+++ b/src/file-${file}.ts\n@@ -1,${lines} +1,${lines} @@\n`;
+    for (let line = 1; line <= lines; line += 1) {
+      diff += line % 3 === 0 ? `-const oldValue${line} = ${line};\n+const newValue${line} = ${line + 1};\n` : ` const stable${line} = true;\n`;
+    }
+  }
+  return diff;
+}
+
+function questionFixture(variant) {
+  const choice = {
+    id:"scope",header:"修改范围",question:"要同时更新相关测试吗？",required:true,is_other:true,
+    options:[
+      {label:"更新测试",description:"同步修改并运行相关测试。"},
+      {label:"只改实现",description:"保留现有测试不变。"},
+    ],
+  };
+  const text = {id:"note",header:"补充说明",question:"还有需要注意的兼容性要求吗？",type:"string",required:true};
+  if (variant === "one-choice") return [choice];
+  if (variant === "one-text") return [text];
+  if (variant === "secret") return [{...text,id:"password",header:"敏感信息",question:"请输入一次性密钥",is_secret:true}];
+  if (variant === "ten") {
+    return Array.from({length:10},(_,index) => index % 3 === 0
+      ? {...choice,id:`choice-${index}`,header:`选择 ${index + 1}`}
+      : index % 3 === 1
+        ? {...text,id:`text-${index}`,header:`说明 ${index + 1}`}
+        : {id:`number-${index}`,header:`数值 ${index + 1}`,question:"请输入 1 到 10",type:"integer",minimum:1,maximum:10,required:true});
+  }
+  return [
+    choice,
+    {...text,required:false},
+    {id:"targets",header:"目标平台",question:"请选择测试平台",type:"array",multiple:true,required:true,options:[
+      {label:"Windows",value:"windows"},{label:"Linux",value:"linux"},{label:"macOS",value:"macos"},
+    ]},
+  ];
+}
+
+function approvalFixture(variant) {
+  const base = {requestId:`demo-${variant}`,availableDecisions:["accept","decline","acceptForSession"]};
+  if (variant === "file") return {...base,kind:"fileChange",summary:"Codex 将修改前端组件",diff:makeDiff(3,8)};
+  if (variant === "permissions") return {...base,kind:"permissions",reason:"任务需要扩大本地访问范围。",permissions:{
+    fileSystem:{read:["E:\\\\project"],write:["E:\\\\project\\\\dist"]},
+    network:{hosts:["registry.npmjs.org"]},
+    environment:["NODE_ENV"],
+  }};
+  if (variant === "network") return {...base,kind:"network",reason:"下载锁定的前端依赖。",protocol:"https",host:"registry.npmjs.org",port:443,scope:"本次命令"};
+  if (variant === "user-input") return {...base,kind:"userInput",questions:questionFixture("three")};
+  if (variant === "elicitation") return {...base,kind:"elicitation",serverName:"github",requestedSchema:{
+    type:"object",required:["issue"],properties:{
+      issue:{type:"integer",title:"Issue 编号",description:"要关联的 GitHub Issue",minimum:1},
+      note:{type:"string",title:"说明",description:"可选补充说明",maxLength:120},
+    },
+  }};
+  return {...base,kind:"commandExecution",summary:"Codex 想运行以下命令",reason:"命令会删除构建缓存并重新生成资源。",risk:"high",destructive:true,
+    command:["powershell","-NoProfile","-Command","Remove-Item -Recurse -Force .cache; npm run build"],cwd:"E:\\\\project"};
+}
+
+function chatFixture(variant) {
+  const status = variant === "complete" ? "completed" : variant === "failed" ? "failed" : "inProgress";
+  const approvals = variant === "approval" ? [{requestId:"approve-chat-01",kind:"commandExecution",params:{
+    reason:"测试将写入临时缓存目录。",command:["python","-m","pytest"],cwd:"E:\\\\project",
+  }}] : [];
+  return {
+    threadId:"thread-demo-01",turnId:"turn-demo-01",status,pending:status === "inProgress",
+    error:variant === "failed" ? "测试命令以退出码 1 结束。" : undefined,
+    chatgptConversationId:"conversation-demo-01",approvals,
+    turn:{id:"turn-demo-01",status,items:[
+      {id:"plan-1",type:"plan",text:"定位问题并运行相关测试"},
+      {id:"cmd-1",type:"commandExecution",command:["python","-m","pytest"],status:variant === "failed" ? "failed" : "completed",exitCode:variant === "failed" ? 1 : 0,aggregatedOutput:variant === "failed" ? "1 failed, 11 passed" : "12 passed"},
+      {id:"file-1",type:"fileChange",status:"completed",changes:[{path:"src/app.py",kind:"update",diff:""},{path:"src/util.py",kind:"update",diff:""}]},
+      {id:"agent-1",type:"subAgentActivity",kind:status === "inProgress" ? "running" : "completed",agentThreadId:"child-demo-01"},
+    ]},
+  };
+}
+
+function fixture(widget, variant) {
+  if (widget === "approval") return {input:approvalFixture(variant),output:null};
+  if (widget === "ask-user") return {input:{questions:questionFixture(variant)},output:null};
+  if (widget === "diff") {
+    const diff = variant === "large" ? makeDiff(8,600)
+      : variant === "codex-patch"
+        ? "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-old value\n+new value\n*** End Patch"
+        : makeDiff(3,12);
+    return {input:{diff},output:null};
+  }
+  if (widget === "chat") return {input:null,output:chatFixture(variant)};
+  return {
+    input:{
+      cwd:variant === "linux" ? "/home/developer/projects/chatcodex" : "E:\\\\project",
+      mode:variant === "resume" ? "resume" : "new",
+    },
+    output:null,
+  };
+}
+
+function modalParams(widget, input) {
+  if (widget === "approval") return {presentation:"modal",request:input};
+  if (widget === "ask-user") return {presentation:"modal",...input};
+  if (widget === "diff") return {presentation:"modal",...input};
+  return null;
+}
+
+function mockOpenAi(theme, displayMode, hostMode, view) {
+  const api = {
+    theme,displayMode,view,locale:"zh-CN",
+    availableDisplayModes:["inline","fullscreen"],
+    maxHeight:displayMode === "fullscreen" ? 900 : 680,
+    safeArea:{insets:{top:0,bottom:displayMode === "fullscreen" ? 96 : 0,left:0,right:0}},
+    styles:{variables:hostVariables(theme)},
+    toolInput:window.__toolInput ?? null,
+    toolOutput:window.__toolOutput ?? null,
+    widgetState:{},
+    async callTool(name,args) {
+      log("[callTool]",name,JSON.stringify(args));
+      if (name === "execution_status") return window.__toolOutput;
+      if (name === "browse_dir") return {
+        path:args?.path || "E:\\\\project",parent:"E:\\\\",
+        entries:[
+          {name:"src",path:`${args?.path || "E:\\\\project"}\\\\src`,is_dir:true},
+          {name:"tests",path:`${args?.path || "E:\\\\project"}\\\\tests`,is_dir:true},
+          {name:"docs",path:`${args?.path || "E:\\\\project"}\\\\docs`,is_dir:true},
+        ],
+      };
+      if (name === "list_codex_sessions") return {sessions:[
+        {threadId:"thread-demo-01",preview:"修复认证回调",cwd:"E:\\\\project"},
+        {threadId:"thread-demo-02",preview:"优化 Widget UI",cwd:"E:\\\\ChatCodex"},
+      ]};
+      return {ok:true};
+    },
+    async sendFollowUpMessage(args) { log("[followUp]",args.prompt); },
+    setWidgetState(state) { this.widgetState=state; log("[setWidgetState]",JSON.stringify(state)); },
+    async requestDisplayMode({mode}) { this.displayMode=mode; log("[requestDisplayMode]",mode); return {mode}; },
+    async requestModal(args) { log("[requestModal]",JSON.stringify(args)); },
+    async requestClose() { log("[requestClose]"); },
+    notifyIntrinsicHeight(height) {
+      if (height && window.frameElement) window.frameElement.style.height=`${Math.ceil(height)}px`;
+    },
+    openExternal({href}) { log("[openExternal]",href); },
+  };
+  if (hostMode === "no-modal") delete api.requestModal;
+  const fail = (name) => () => {
+    log(`[${name}] rejected`);
+    throw new Error("private host method rejected");
+  };
+  if (hostMode === "private" || hostMode === "broken") {
+    Object.assign(api,{
+      showToast:hostMode === "broken" ? fail("showToast") : (args) => log("[showToast]",JSON.stringify(args)),
+      triggerHaptic:hostMode === "broken" ? fail("haptic") : (args) => log("[haptic]",JSON.stringify(args)),
+      requestPrompt:hostMode === "broken"
+        ? async() => { log("[requestPrompt] invalid result"); return {bad:true}; }
+        : async() => { log("[requestPrompt]"); return {prompt:"请继续运行相关测试"}; },
+      requestTargetedReply:hostMode === "broken" ? fail("targetedReply") : (args) => log("[targetedReply]",JSON.stringify(args)),
+      requestFocusedObject:hostMode === "broken" ? fail("focusedObject") : (args) => log("[focusedObject]",JSON.stringify(args)),
+      requestCloseFocusedObject:hostMode === "broken" ? fail("closeFocusedObject") : () => log("[closeFocusedObject]"),
+      openConversationOverlay:hostMode === "broken" ? fail("conversationOverlay") : (args) => log("[conversationOverlay]",JSON.stringify(args)),
+      callMcp:hostMode === "broken" ? async() => { throw new Error("raw MCP rejected"); } : async(args) => ({ok:true,args}),
+    });
+  }
+  return api;
+}
+
+function load() {
+  const widget = widgetName();
+  const selectedModule = $("widget").value;
+  const theme = document.querySelector(".toggle .on").id;
+  const hostMode = $("host").value;
+  const surface = $("surface").value;
+  const variant = $("variant").value;
+  const width = Number($("width").value);
+  const displayMode = surface === "fullscreen" || surface === "focused" ? "fullscreen" : "inline";
+  const data = fixture(widget, variant);
+  const params = surface === "modal"
+    ? modalParams(widget, data.input)
+    : surface === "focused"
+      ? {kind:widget === "diff" ? "diff" : "commandExecution",path:"src/file-2.ts",itemId:"cmd-1"}
+      : null;
+  const view = {mode:surface === "focused" ? "fullscreen" : surface,params,isTombstone:false};
+  document.body.dataset.theme = theme;
+  document.body.dataset.mode = displayMode;
+  document.documentElement.style.setProperty("--stage-width",`${width}px`);
+  window.__toolInput = data.input;
+  window.__toolOutput = data.output;
+  const reducedCss = $("reduced").checked ? "*{animation-duration:.001ms!important;transition-duration:.001ms!important}" : "";
+  const doc = `<!doctype html><html data-theme="${theme}"><head><meta charset="utf-8"><style>${reducedCss}</style></head><body><div id="root"></div>
+  <script>window.__toolInput=${JSON.stringify(data.input)};window.__toolOutput=${JSON.stringify(data.output)};window.log=(...a)=>{parent.document.getElementById("log").textContent+=a.join(" ")+"\\n"};<\/script>
+  <script type="module">
+    import RefreshRuntime from "/@react-refresh";
+    RefreshRuntime.injectIntoGlobalHook(window);
+    window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>(type)=>type;
+    window.__vite_plugin_react_preamble_installed__=true;
+  <\/script>
+  <script type="module">
+    ${hostVariables.toString()}
+    window.openai=(${mockOpenAi.toString()})("${theme}","${displayMode}","${hostMode}",${JSON.stringify(view)});
+    import("${selectedModule}").catch(error=>{document.body.innerHTML="<pre style='color:red;white-space:pre-wrap'>"+error.stack+"</pre>";console.error(error)});
+  <\/script></body></html>`;
+  $("frame").srcdoc = doc;
+  const url = new URL(location.href);
+  for (const [key,value] of Object.entries({widget,surface,width:String(width),variant,host:hostMode,theme})) {
+    url.searchParams.set(key,value);
+  }
+  if ($("reduced").checked) url.searchParams.set("reduced","1");
+  else url.searchParams.delete("reduced");
+  history.replaceState(null,"",url);
+  log("--- load",widget,surface,`${width}px`,variant,theme,hostMode,"---");
+}
+
+for (const id of ["surface","width","variant","host","reduced"]) $(id).addEventListener("change",load);
+$("widget").addEventListener("change",() => { fillVariants(); load(); });
+$("reload").addEventListener("click",load);
+for (const id of ["light","dark"]) $(id).addEventListener("click",function() {
+  document.querySelectorAll(".toggle button").forEach((button) => button.classList.remove("on"));
+  this.classList.add("on");
+  load();
+});
+
+const initial = new URLSearchParams(location.search);
+const initialWidget = initial.get("widget");
+if (initialWidget) {
+  const option = [...$("widget").options].find((item) => item.textContent === initialWidget);
+  if (option) $("widget").value = option.value;
+}
+fillVariants(initial.get("variant"));
+for (const [id,allowed] of [
+  ["surface",["inline","modal","fullscreen","focused"]],
+  ["width",["320","480","768","1024","1440"]],
+  ["host",["public","no-modal","private","broken"]],
+]) {
+  if (allowed.includes(initial.get(id))) $(id).value = initial.get(id);
+}
+if (initial.get("theme") === "dark") {
+  $("light").classList.remove("on");
+  $("dark").classList.add("on");
+}
+$("reduced").checked = initial.get("reduced") === "1";
+load();
+</script>
+</body>
+</html>

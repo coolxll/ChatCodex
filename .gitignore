@@ -1,0 +1,17 @@
+# Local Python/runtime state
+backend/.venv/
+backend/__pycache__/
+backend/app/**/__pycache__/
+backend/tests/**/__pycache__/
+backend/*.db
+backend/*.db-*
+*.py[cod]
+
+# Frontend dependencies and generated bundles
+frontend/node_modules/
+frontend/dist/
+
+# Downloaded executables, credentials, and local scratch data
+native/
+.tmp/
+.idea/

@@ -1,0 +1,27 @@
+[project]
+name = "chatcodex-backend"
+version = "0.1.0"
+description = "ChatCodex Gateway — 把 Web Chat 变成 Codex"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "fastmcp>=2.14,<3",
+    "mcp>=1.25,<2",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.29",
+    "websockets>=15,<16",
+]
+
+[project.optional-dependencies]
+# 生产可换 PostgreSQL 驱动;sqlite 走 stdlib 无需依赖
+postgres = ["psycopg[binary]>=3.1"]
+
+[project.scripts]
+chatcodex-gateway = "app.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
