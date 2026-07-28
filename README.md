@@ -120,3 +120,5 @@ Linux/macOS：`$XDG_STATE_HOME/chatcodex/`），可用 `CHATCODEX_DATABASE_URL` 
 | `CHATCODEX_APPROVAL_TIMEOUT_MS` | `300000` | 审批等待时长（毫秒） |
 
 完整列表与默认值见控制台「设置」页。
+
+[于 Linux.do 社区发布](https://linux.do)
