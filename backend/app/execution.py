@@ -14,11 +14,22 @@ import re
 from typing import Any, Optional
 
 from .config import Settings
+from .appserver.mcp_carrier import McpCarrier
 from .models import ExecutionContext, ExecutionRegistry
 from .operations import OperationEnvelope, OperationRouter, PolicyDecision
 
 
 MAX_WIDGET_DIFF_CHARS = 200_000
+# Forwarded MCP tool calls may run longer than standalone fs RPCs; cap them so a
+# hung downstream server cannot hold an approval slot forever.
+MCP_TOOL_TIMEOUT_MS = 120_000
+MCP_TOOL_TIMEOUT_SEC = float(MCP_TOOL_TIMEOUT_MS) / 1000.0
+
+# Gateway-side policy for which downstream MCP tools WebChat may see and call.
+# Unlisted tools default to "deny".  "allow" runs directly (read-only only);
+# anything with side effects always falls back to a one-time Gateway approval.
+MCP_TOOL_POLICY_DEFAULT = "deny"
+MCP_TOOL_POLICIES = {"allow", "ask", "deny"}
 
 
 class ExecutionError(Exception):
@@ -106,6 +117,7 @@ class ExecutionOrchestrator:
         self.store = store
         self.router = OperationRouter(appserver, settings)
         self._plans: dict[str, dict[str, Any]] = {}
+        self._carrier = McpCarrier(appserver)
 
     async def configure_context(
             self, user_id: str, meta: dict, config: dict
@@ -215,6 +227,9 @@ class ExecutionOrchestrator:
             platform_name=target_platform,
             appserver_instance_id=appserver_instance,
         )
+        # The workspace/security version changed; drop any carrier thread so the
+        # next MCP call re-creates it against the fresh context.
+        await self._carrier.drop(context.id)
         return {
             "conversationId": context.conversation_id,
             "contextId": context.id,
@@ -365,6 +380,15 @@ class ExecutionOrchestrator:
                 list(normalized.get("command") or []),
                 str(normalized.get("cwd") or context.cwd),
             )
+        elif operation == "mcp/tool/call":
+            server = str(normalized.get("server") or "")
+            tool = str(normalized.get("tool") or "")
+            if self._mcp_tool_policy(server, tool) == "deny":
+                raise ExecutionError(
+                    "mcp_tool_forbidden",
+                    f"MCP tool is not exposed to WebChat: {server}/{tool}",
+                )
+            targets = (f"{server}/{tool}",)
         envelope = self.router.envelope(
             context, user_id, operation, normalized,
             policy_fingerprint=probe.fingerprint if probe else "",
@@ -698,6 +722,129 @@ class ExecutionOrchestrator:
             "conversationId": context.conversation_id,
             "applied": True, "fileChanges": file_changes,
             "diff": diff, "diffTruncated": diff_truncated,
+        }
+
+    # ---- downstream MCP tool forwarding ----
+    def _mcp_tool_policy(self, server: str, tool: str) -> str:
+        """Return allow|ask|deny for one downstream tool (default deny)."""
+        raw = (self.store.get("mcp_tool_policy") if self.store else None) or {}
+        if not isinstance(raw, dict):
+            return MCP_TOOL_POLICY_DEFAULT
+        value = str(raw.get(f"{server}/{tool}", MCP_TOOL_POLICY_DEFAULT))
+        return value if value in MCP_TOOL_POLICIES else MCP_TOOL_POLICY_DEFAULT
+
+    def set_mcp_tool_policy(self, policies: dict[str, str]) -> dict[str, str]:
+        """Persist allow/ask/deny for a set of server/tool keys."""
+        if not isinstance(policies, dict):
+            raise ExecutionError("invalid_policy", "mcp tool policy must be an object")
+        raw = (self.store.get("mcp_tool_policy") if self.store else None) or {}
+        current = dict(raw) if isinstance(raw, dict) else {}
+        for key, value in policies.items():
+            name = str(key)
+            if "/" not in name:
+                raise ExecutionError(
+                    "invalid_policy", f"policy key must be server/tool: {name}")
+            decision = str(value)
+            if decision not in MCP_TOOL_POLICIES:
+                raise ExecutionError(
+                    "invalid_policy",
+                    f"policy for {name} must be one of allow/ask/deny",
+                )
+            if decision == MCP_TOOL_POLICY_DEFAULT:
+                current.pop(name, None)
+            else:
+                current[name] = decision
+        if self.store:
+            self.store.set("mcp_tool_policy", current)
+        return current
+
+    def mcp_tool_policies(self) -> dict[str, str]:
+        raw = (self.store.get("mcp_tool_policy") if self.store else None) or {}
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    async def list_mcp_tools(
+            self, user_id: str, meta: dict, *, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Enumerate downstream MCP tools visible to WebChat, with policy.
+
+        Uses a thread-free status listing when available, else falls back to a
+        carrier thread.  Each tool is annotated with its Gateway policy and the
+        read-only hint so the panel and the model can reason about exposure.
+        """
+        context = self.active_context(user_id, meta)
+        response: dict[str, Any] = {}
+        try:
+            response = await self.appserver.mcp_server_status_list()
+        except Exception:
+            carrier = await self._carrier.thread_id(context.id)
+            response = await self.appserver.mcp_server_status_list(carrier)
+        servers = (response or {}).get("data") or []
+        out_servers: list[dict[str, Any]] = []
+        for server in servers:
+            name = str(server.get("name") or "")
+            raw_tools = server.get("tools") or {}
+            tool_items = list(raw_tools.values()) if isinstance(
+                raw_tools, dict) else list(raw_tools or [])
+            tools: list[dict[str, Any]] = []
+            for tool in tool_items:
+                tool_name = str(tool.get("name") or "")
+                annotations = tool.get("annotations") or {}
+                read_only = bool(annotations.get("readOnlyHint"))
+                tools.append({
+                    "name": tool_name,
+                    "description": str(tool.get("description") or ""),
+                    "inputSchema": tool.get("inputSchema")
+                        or tool.get("input_schema") or {},
+                    "readOnly": read_only,
+                    "policy": self._mcp_tool_policy(name, tool_name),
+                })
+            tools.sort(key=lambda item: item["name"])
+            out_servers.append({
+                "name": name,
+                "authStatus": str(server.get("authStatus") or ""),
+                "tools": tools,
+            })
+        out_servers.sort(key=lambda item: item["name"])
+        return {"conversationId": context.conversation_id, "servers": out_servers}
+
+    async def mcp_tool_call(
+            self, user_id: str, meta: dict, server: str, tool: str,
+            arguments: Optional[dict], *, envelope: OperationEnvelope,
+            timeout_ms: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Execute an approved MCP tool call on the context's carrier thread."""
+        context = await self.validate_operation(user_id, meta, envelope)
+        if self._mcp_tool_policy(server, tool) == "deny":
+            raise ExecutionError(
+                "mcp_tool_forbidden",
+                f"MCP tool is not exposed to WebChat: {server}/{tool}",
+            )
+        approved = envelope.arguments
+        if (
+            str(approved.get("server") or "") != server
+            or str(approved.get("tool") or "") != tool
+            or (approved.get("arguments") or {}) != (arguments or {})
+        ):
+            raise ExecutionError(
+                "execution_action_changed",
+                "MCP tool name or arguments changed after approval",
+            )
+        carrier = await self._carrier.thread_id(context.id)
+        effective_timeout = (
+            timeout_ms if isinstance(timeout_ms, int) and timeout_ms > 0
+            else MCP_TOOL_TIMEOUT_MS
+        )
+        result = await self.appserver.mcp_tool_call(
+            carrier, server, tool, arguments or {},
+            timeout=max(1.0, effective_timeout / 1000.0),
+        )
+        return {
+            "conversationId": context.conversation_id,
+            "server": server,
+            "tool": tool,
+            "content": (result or {}).get("content") or [],
+            "structuredContent": (result or {}).get("structuredContent"),
+            "isError": bool((result or {}).get("isError")),
         }
 
     @staticmethod

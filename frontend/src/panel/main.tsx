@@ -295,14 +295,90 @@ function Settings() {
           </CardContent>
         </Card>
         <Card><CardHeader><CardTitle className="flex items-center gap-2"><Network className="h-4 w-4 text-primary" />App Server 工具边界</CardTitle><CardDescription className="mt-1">Gateway 只暴露登记过的独立执行工具。</CardDescription></CardHeader><CardContent><Alert>未知副作用操作默认禁止，需经统一审批。</Alert></CardContent></Card>
+        <McpTools />
       </div>
       <div className="space-y-4 xl:sticky xl:top-24 xl:h-fit"><Card><CardHeader><CardTitle>OAuth Metadata 自检</CardTitle><CardDescription>检查当前运行实例的 OAuth 配置是否完整。</CardDescription></CardHeader><CardContent className="space-y-3"><Badge variant={audit?.complete ? "success" : audit?.enabled ? "warning" : "secondary"}>{audit?.complete ? "配置完整" : audit?.enabled ? "需要修复" : "OAuth 未启用"}</Badge>{audit?.issues?.map((issue: string) => <p key={issue} className="text-xs leading-5 text-destructive">{issue}</p>)}</CardContent></Card><Alert tone="warning">认证类改动需重启 Gateway 才会生效；修改 Web Token 后需重新登录。</Alert></div>
     </div>
   </Page>;
 }
 
-function Approvals() {
-  const [items, setItems] = useState<any[]>([]); const load = () => api.approvals("").then((d) => setItems(d.pending ?? [])).catch(() => {});
+function McpTools() {
+  const [data, setData] = useState<any>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState("");
+  const [openServers, setOpenServers] = useState<Record<string, boolean>>({});
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const load = () => api.mcpTools("").then(setData).catch((e) => setError(String(e)));
+  useEffect(() => { load(); }, []);
+  async function setPolicy(key: string, value: string) {
+    setBusy(key); setError("");
+    try { await api.setMcpToolPolicy("", { [key]: value }); await load(); }
+    catch (e) { setError(String(e)); } finally { setBusy(""); }
+  }
+  async function setGroupPolicy(server: string, tools: any[], value: string) {
+    setBusy(`${server}/*`); setError("");
+    const policies: Record<string, string> = {};
+    for (const tool of tools) policies[`${server}/${tool.name}`] = value;
+    try { await api.setMcpToolPolicy("", policies); await load(); }
+    catch (e) { setError(String(e)); } finally { setBusy(""); }
+  }
+  const servers = data?.servers ?? [];
+  const total = servers.reduce((n: number, s: any) => n + (s.tools?.length ?? 0), 0);
+  const prefixOf = (name: string) => { const i = name.indexOf("."); return i > 0 ? name.slice(0, i) : ""; };
+  const groupOf = (server: any) => {
+    const byPrefix = new Map<string, any[]>();
+    for (const tool of server.tools ?? []) {
+      const prefix = prefixOf(tool.name);
+      if (!byPrefix.has(prefix)) byPrefix.set(prefix, []);
+      byPrefix.get(prefix)!.push(tool);
+    }
+    // Only split into prefix groups when there's more than one meaningful prefix;
+    // a single/prefix-less server renders as one flat group.
+    const entries = [...byPrefix.entries()];
+    const meaningful = entries.filter(([p]) => p !== "");
+    return entries.length > 1 && meaningful.length > 0 ? entries : [["", server.tools ?? []]];
+  };
+  const toolRow = (server: any, tool: any) => {
+    const key = `${server.name}/${tool.name}`;
+    const policy = tool.policy ?? "deny";
+    return <div key={key} className="flex items-center gap-3 px-3 py-2"><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className="truncate font-mono text-xs">{tool.name}</span>{tool.readOnly ? <Badge variant="success">只读</Badge> : <Badge variant="warning">副作用</Badge>}</div>{tool.description && <p className="mt-0.5 truncate text-xs text-muted-foreground">{tool.description}</p>}</div><div className="flex shrink-0 gap-1">{[["allow", "允许"], ["ask", "需审批"], ["deny", "禁止"]].map(([value, label]) => <button key={value} disabled={busy === key} onClick={() => setPolicy(key, value)} className={cn("rounded-md border px-2 py-1 text-xs transition", policy === value ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent")}>{label}</button>)}</div></div>;
+  };
+  return <Card><CardHeader><CardTitle className="flex items-center gap-2"><Network className="h-4 w-4 text-primary" />下游 MCP 工具</CardTitle><CardDescription>选择哪些下游 MCP 工具暴露给 WebChat。未列出的工具默认禁止；只读工具可直接运行，有副作用的一律需一次性审批。</CardDescription></CardHeader><CardContent className="space-y-3">
+    {error && <Alert>{error}</Alert>}
+    {!data ? <Loading text="正在读取 MCP 工具" /> : servers.length === 0 ? <Empty icon={Network} title="没有可用的下游 MCP 工具" detail="在 Codex 配置里登记下游 MCP server 后，这里会列出它们提供的工具。" /> : <>
+      <p className="text-xs text-muted-foreground">{servers.length} 个 server · {total} 个工具</p>
+      {servers.map((server: any) => {
+        const serverOpen = openServers[server.name] ?? (server.tools?.length ?? 0) <= 10;
+        const sideEffects = (server.tools ?? []).filter((t: any) => !t.readOnly).length;
+        return <div key={server.name} className="rounded-lg border">
+          <button type="button" onClick={() => setOpenServers((now) => ({ ...now, [server.name]: !serverOpen }))} className="flex w-full items-center gap-2 border-b bg-muted/40 px-3 py-2 text-left">
+            <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", serverOpen && "rotate-90")} />
+            <span className="text-sm font-medium">{server.name}</span>
+            <span className="ml-auto text-xs text-muted-foreground">{server.tools?.length ?? 0} 个工具{sideEffects > 0 ? ` · ${sideEffects} 副作用` : ""}</span>
+          </button>
+          {serverOpen && <div>{groupOf(server).map(([prefix, tools]) => {
+            const groupKey = `${server.name}::${prefix}`;
+            const groupOpen = openGroups[groupKey] ?? ((server.tools?.length ?? 0) <= 10 || prefix === "");
+            const sideCount = tools.filter((t: any) => !t.readOnly).length;
+            return <div key={groupKey} className="border-b last:border-b-0">
+              {prefix !== "" && <div className="flex items-center gap-2 bg-muted/20 px-3 py-1.5">
+                <button type="button" onClick={() => setOpenGroups((now) => ({ ...now, [groupKey]: !groupOpen }))} className="flex items-center gap-2 text-left">
+                  <ChevronRight className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", groupOpen && "rotate-90")} />
+                  <span className="font-mono text-xs font-medium">{prefix}.*</span>
+                  <span className="text-[11px] text-muted-foreground">{tools.length}{sideCount > 0 ? ` · ${sideCount} 副作用` : ""}</span>
+                </button>
+                <div className="ml-auto flex gap-1">{[["allow", "全允许"], ["deny", "全禁止"]].map(([value, label]) => <button key={value} disabled={busy === `${server}/*`} onClick={() => setGroupPolicy(server.name, tools, value)} className="rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:bg-accent">{label}</button>)}</div>
+              </div>}
+              {groupOpen && <div className="divide-y">{tools.map((tool: any) => toolRow(server, tool))}</div>}
+            </div>;
+          })}</div>}
+        </div>;
+      })}
+    </>}
+  </CardContent></Card>;
+}
+
+function Approvals() {  const [items, setItems] = useState<any[]>([]); const load = () => api.approvals("").then((d) => setItems(d.pending ?? [])).catch(() => {});
   useEffect(() => {
     load();
     const stream = new EventSource(api.eventStreamUrl("*"), { withCredentials: true });

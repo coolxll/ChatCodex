@@ -40,6 +40,8 @@ DEFAULTS: dict[str, Any] = {
     "codex_download_url": "",
     "codex_ws_port": 8765,              # app-server ws 端口
     "codex_auto_restart": True,         # 看护自动重启
+    # ---- 下游 MCP 工具转发 ----
+    "mcp_tool_policy": {},              # {"server/tool": allow|ask|deny}, 默认 deny
 }
 
 def _migrate_value(key: str, value: Any) -> Any:

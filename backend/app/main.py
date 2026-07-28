@@ -1005,15 +1005,63 @@ async def oauth_metadata_audit(p: Principal = Depends(principal)):
 
 @app.get("/api/mcp-tools")
 async def get_mcp_tools(p: Principal = Depends(principal)):
-    """Thread-bound downstream MCP forwarding is intentionally unavailable."""
-    return {
-        "tools": [],
-        "allowed": [],
-        "policy": "registered-gateway-tools-only",
-        "default": "deny",
-        "threadBoundForwarding": False,
-        "reason": "WebChat owns its tool loop; Codex agent sessions are disabled",
-    }
+    """Enumerate downstream MCP tools and their Gateway exposure policy.
+
+    The inventory itself is global to the App Server (not per-conversation), so
+    this uses a throwaway identity context purely to satisfy the orchestrator's
+    active-context requirement; the returned tool set and policies are global.
+    """
+    try:
+        meta = {"conversationId": "__panel_mcp_inventory__"}
+        data = await orch.list_mcp_tools("panel", meta)
+    except ExecutionError:
+        # No active workspace yet; fall back to a thread-free inventory without
+        # the per-conversation wrapper so the panel can still manage policy.
+        data = {"conversationId": "", "servers": await _panel_mcp_inventory()}
+    data["policies"] = orch.mcp_tool_policies()
+    data["policy"] = "registered-gateway-tools-only"
+    data["default"] = "deny"
+    data["mcpForwarding"] = True
+    return data
+
+
+async def _panel_mcp_inventory() -> list:
+    try:
+        response = await appserver.mcp_server_status_list()
+    except Exception:
+        return []
+    servers = (response or {}).get("data") or []
+    out = []
+    for server in servers:
+        name = str(server.get("name") or "")
+        raw_tools = server.get("tools") or {}
+        tool_items = list(raw_tools.values()) if isinstance(
+            raw_tools, dict) else list(raw_tools or [])
+        tools = []
+        for tool in tool_items:
+            tool_name = str(tool.get("name") or "")
+            annotations = tool.get("annotations") or {}
+            tools.append({
+                "name": tool_name,
+                "description": str(tool.get("description") or ""),
+                "readOnly": bool(annotations.get("readOnlyHint")),
+                "policy": (orch.mcp_tool_policies().get(f"{name}/{tool_name}", "deny")),
+            })
+        tools.sort(key=lambda item: item["name"])
+        out.append({"name": name, "tools": tools})
+    out.sort(key=lambda item: item["name"])
+    return out
+
+
+@app.post("/api/mcp-tools/policy")
+async def set_mcp_tool_policy(request: Request, p: Principal = Depends(principal)):
+    body = await _read_json_body_limited(request, 64 * 1024)
+    policies = body.get("policies")
+    try:
+        current = orch.set_mcp_tool_policy(policies if isinstance(policies, dict) else {})
+    except ExecutionError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"policies": current}
 
 
 @app.post("/api/settings")

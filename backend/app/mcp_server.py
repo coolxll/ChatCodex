@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 from typing import Any, Optional
 
 from mcp import types as mtypes
@@ -281,6 +282,18 @@ def _output_schemas() -> dict[str, dict[str, Any]]:
             "entries": {"type": "array", "items": any_object},
             "error": string,
         }, ["path", "entries"]),
+        "mcp_list_tools": obj({
+            "conversationId": string,
+            "servers": {"type": "array", "items": any_object},
+        }, ["conversationId", "servers"]),
+        "mcp_call_tool": obj({
+            "conversationId": string,
+            "server": string,
+            "tool": string,
+            "content": {"type": "array", "items": any_object},
+            "structuredContent": {"anyOf": [any_object, {"type": "null"}]},
+            "isError": boolean,
+        }, ["conversationId", "server", "tool", "content", "isError"]),
     }
 
 
@@ -506,6 +519,23 @@ def build_mcp(
                     "execPolicyMode": decision.execpolicy_mode,
                     "execPolicyDecision": decision.execpolicy_decision,
                     "matchedRules": decision.matched_rules,
+                }
+            elif operation == "mcp/tool/call":
+                server = str(envelope.arguments.get("server") or "")
+                tool = str(envelope.arguments.get("tool") or "")
+                message = (
+                    "ChatCodex needs one-time approval to call a downstream MCP "
+                    "tool.\n\n"
+                    f"Tool: {server}/{tool}\n"
+                    f"Arguments: {json.dumps(envelope.arguments.get('arguments') or {}, ensure_ascii=False)[:1500]}\n"
+                    f"Reason: {decision.reason}"
+                )
+                kind = "elicitation"
+                params = {
+                    "server": server,
+                    "tool": tool,
+                    "arguments": envelope.arguments.get("arguments") or {},
+                    "reason": decision.reason,
                 }
             else:
                 verb = (
@@ -865,6 +895,67 @@ def build_mcp(
     )
     async def browse_dir(path: Optional[str] = None) -> dict[str, Any]:
         return await orch.browse_dir(path or "")
+
+    @mcp.tool(
+        "mcp_list_tools",
+        description=(
+            "List downstream MCP servers and the tools exposed to this WebChat "
+            "conversation, with their read-only hints and approval policy."
+        ),
+        meta={
+            "openai/toolInvocation/invoking": "Listing MCP tools",
+            "openai/toolInvocation/invoked": "Listed MCP tools",
+        },
+        annotations={
+            "readOnlyHint": True, "destructiveHint": False,
+            "idempotentHint": True, "openWorldHint": False,
+        },
+    )
+    async def mcp_list_tools(ctx: Context) -> dict[str, Any]:
+        try:
+            return await orch.list_mcp_tools(_user(ctx), _meta(ctx))
+        except Exception as exc:
+            raise as_tool_error(exc) from exc
+
+    @mcp.tool(
+        "mcp_call_tool",
+        description=(
+            "Call a downstream MCP tool through the idle carrier thread. "
+            "Read-only tools run directly; tools with side effects require "
+            "one-time Gateway approval."
+        ),
+        meta={
+            "openai/toolInvocation/invoking": "Calling MCP tool",
+            "openai/toolInvocation/invoked": "MCP tool finished",
+        },
+        annotations={
+            "readOnlyHint": False, "destructiveHint": True,
+            "idempotentHint": False, "openWorldHint": True,
+        },
+    )
+    async def mcp_call_tool(
+            ctx: Context,
+            server: str,
+            tool: str,
+            arguments: Optional[dict] = None,
+            annotations: Optional[dict] = None,
+            timeoutMs: Optional[int] = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "server": str(server or ""),
+            "tool": str(tool or ""),
+            "arguments": arguments or {},
+            "annotations": annotations or {},
+        }
+        return await run_mutation(
+            ctx,
+            "mcp/tool/call",
+            payload,
+            lambda envelope: orch.mcp_tool_call(
+                _user(ctx), _meta(ctx), payload["server"], payload["tool"],
+                payload["arguments"], envelope=envelope, timeout_ms=timeoutMs,
+            ),
+        )
 
     mcp._chatcodex_orch = orch  # noqa: SLF001
     mcp._chatcodex_approval = approval  # noqa: SLF001

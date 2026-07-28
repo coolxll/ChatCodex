@@ -20,7 +20,7 @@ READ_ONLY_OPERATIONS = {
     "config/read", "configRequirements/read", "permissionProfile/list",
 }
 GATEWAY_OPERATIONS = {
-    "exec_command", "write_file", "apply_patch",
+    "exec_command", "write_file", "apply_patch", "mcp/tool/call",
     "command/exec", "fs/writeFile",
 }
 # The current official App Server does not guarantee native approval for any
@@ -368,6 +368,26 @@ class OperationRouter:
                 probe.matched_rules,
             )
 
+        if envelope.method == "mcp/tool/call":
+            server = str(envelope.arguments.get("server") or "")
+            tool = str(envelope.arguments.get("tool") or "")
+            read_only = bool(
+                envelope.arguments.get("annotations", {}).get("readOnlyHint")
+            ) if isinstance(envelope.arguments.get("annotations"), dict) else False
+            if read_only:
+                return PolicyDecision(
+                    "auto",
+                    f"read-only MCP tool {server}/{tool} runs directly",
+                    owner, targets,
+                )
+            return PolicyDecision(
+                "ask",
+                f"MCP tool {server}/{tool} may have side effects and the idle "
+                "carrier thread applies no native approval; Gateway requires "
+                "one-time approval",
+                owner, targets,
+            )
+
         return PolicyDecision(
             "ask",
             "official App Server standalone file RPC has no native approval",
@@ -406,6 +426,7 @@ class OperationRouter:
             "fallbackApproval": True,
             "eventTransport": "sse",
             "codexAgentSessions": False,
+            "mcpForwarding": True,
             "standaloneFilesystem": (
                 "available" if internal else "unavailable"
             ),

@@ -78,9 +78,16 @@ class ThreadFreeExecutionContracts(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["codexAgentSession"])
         self.assertEqual(result["contextVersion"], 1)
         self.assertEqual(self.appserver.call.await_count, 0)
-        self.assertFalse(hasattr(CodexRpcMethods, "thread_start"))
-        self.assertFalse(hasattr(CodexRpcMethods, "thread_resume"))
+        # Only an idle ephemeral carrier thread + MCP forwarding RPCs exist;
+        # there is still no way to start a model turn through this adapter.
         self.assertFalse(hasattr(CodexRpcMethods, "turn_start"))
+        self.assertFalse(hasattr(CodexRpcMethods, "thread_resume"))
+        import inspect as _inspect
+        self.assertTrue(
+            _inspect.signature(
+                CodexRpcMethods.thread_start
+            ).parameters["ephemeral"].default
+        )
 
     async def test_external_exec_uses_conservative_gateway_owner(self):
         self.use_external_appserver()
@@ -464,7 +471,7 @@ class ThreadFreeExecutionContracts(unittest.IsolatedAsyncioTestCase):
             conversation_id=context.conversation_id,
         ))
 
-    def test_mcp_registers_only_thread_free_tools(self):
+    def test_mcp_registers_thread_free_and_mcp_forwarding_tools(self):
         bridge = ApprovalBridge(self.appserver, self.db)
         mcp = build_mcp(self.settings, self.orch, bridge)
         names = set(mcp._tool_manager._tools)
@@ -474,8 +481,161 @@ class ThreadFreeExecutionContracts(unittest.IsolatedAsyncioTestCase):
             "read_file", "write_file", "list_dir", "search_files",
             "exec_command", "apply_patch", "update_plan", "view_image",
             "request_user_input", "browse_dir",
+            "mcp_list_tools", "mcp_call_tool",
         })
         self.assertFalse(any(name.startswith("mcp__") for name in names))
+
+
+class McpForwardingContracts(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.db = Database(Settings(
+            database_url=f"sqlite:///{root / 'mcp.db'}",
+        ))
+        self.registry = ExecutionRegistry(self.db)
+        self.settings = Settings(codex_app_mode="internal", mcp_auth_mode="noauth")
+        self.appserver = SimpleNamespace(
+            status=Mock(return_value={
+                "instanceId": "appserver-1",
+                "platformOs": platform.system().lower(),
+            }),
+            thread_start=AsyncMock(return_value={"thread": {"id": "thread-1"}}),
+            mcp_server_status_list=AsyncMock(return_value={"data": [{
+                "name": "docs",
+                "authStatus": "unsupported",
+                "tools": {
+                    "search": {
+                        "name": "search",
+                        "description": "read-only search",
+                        "inputSchema": {"type": "object"},
+                        "annotations": {"readOnlyHint": True},
+                    },
+                    "delete": {
+                        "name": "delete",
+                        "description": "destructive",
+                        "inputSchema": {"type": "object"},
+                        "annotations": {"readOnlyHint": False},
+                    },
+                },
+            }]}),
+            mcp_tool_call=AsyncMock(return_value={
+                "content": [{"type": "text", "text": "ok"}],
+                "structuredContent": {"hits": 2},
+                "isError": False,
+            }),
+            call=AsyncMock(return_value={"requirements": None}),
+        )
+        from app.settings_store import SettingsStore
+        self.store = SettingsStore(self.db)
+        self.orch = ExecutionOrchestrator(
+            self.settings, self.appserver, self.registry, self.store,
+        )
+        self.meta = {"conversationId": "conversation-a"}
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.tmp.cleanup()
+
+    async def configure(self, **over):
+        cfg = {
+            "cwd": self.tmp.name, "workspaceRoots": [self.tmp.name],
+            "sandbox": "workspace-write", "approvalPolicy": "on-request",
+            "workMode": "agent",
+        }
+        cfg.update(over)
+        return await self.orch.configure_context("user-a", self.meta, cfg)
+
+    async def test_list_mcp_tools_marks_policy_and_readonly(self):
+        await self.configure()
+        data = await self.orch.list_mcp_tools("user-a", self.meta)
+        server = data["servers"][0]
+        self.assertEqual(server["name"], "docs")
+        by_name = {tool["name"]: tool for tool in server["tools"]}
+        self.assertTrue(by_name["search"]["readOnly"])
+        self.assertFalse(by_name["delete"]["readOnly"])
+        # Unlisted tools default to deny.
+        self.assertEqual(by_name["search"]["policy"], "deny")
+        self.assertEqual(by_name["delete"]["policy"], "deny")
+
+    async def test_tool_policy_roundtrip_and_validation(self):
+        self.orch.set_mcp_tool_policy({"docs/search": "allow", "docs/delete": "ask"})
+        self.assertEqual(self.orch.mcp_tool_policies(),
+                         {"docs/search": "allow", "docs/delete": "ask"})
+        # Reset to default removes the override.
+        self.orch.set_mcp_tool_policy({"docs/search": "deny"})
+        self.assertEqual(self.orch.mcp_tool_policies(), {"docs/delete": "ask"})
+        with self.assertRaisesRegex(ExecutionError, "server/tool"):
+            self.orch.set_mcp_tool_policy({"noslash": "allow"})
+        with self.assertRaisesRegex(ExecutionError, "allow/ask/deny"):
+            self.orch.set_mcp_tool_policy({"docs/search": "bogus"})
+
+    async def test_deny_tool_is_forbidden_before_pending(self):
+        await self.configure()
+        with self.assertRaisesRegex(ExecutionError, "not exposed"):
+            await self.orch.prepare_operation(
+                "user-a", self.meta, "mcp/tool/call",
+                {"server": "docs", "tool": "search", "arguments": {}},
+            )
+        self.appserver.mcp_tool_call.assert_not_awaited()
+
+    async def test_readonly_allowed_tool_runs_without_approval(self):
+        await self.configure()
+        self.orch.set_mcp_tool_policy({"docs/search": "allow"})
+        context, envelope, decision = await self.orch.prepare_operation(
+            "user-a", self.meta, "mcp/tool/call",
+            {"server": "docs", "tool": "search", "arguments": {"q": "x"},
+             "annotations": {"readOnlyHint": True}},
+        )
+        self.assertEqual(decision.action, "auto")
+        self.assertEqual(envelope.approval_owner, "gateway")
+        result = await self.orch.mcp_tool_call(
+            "user-a", self.meta, "docs", "search", {"q": "x"},
+            envelope=envelope,
+        )
+        self.assertEqual(result["structuredContent"], {"hits": 2})
+        args = self.appserver.mcp_tool_call.await_args.args
+        self.assertEqual(args[1:4], ("docs", "search", {"q": "x"}))
+
+    async def test_side_effect_tool_requires_gateway_approval(self):
+        await self.configure()
+        self.orch.set_mcp_tool_policy({"docs/delete": "ask"})
+        _, _, decision = await self.orch.prepare_operation(
+            "user-a", self.meta, "mcp/tool/call",
+            {"server": "docs", "tool": "delete", "arguments": {"id": 1},
+             "annotations": {"readOnlyHint": False}},
+        )
+        self.assertEqual(decision.action, "ask")
+
+    async def test_approved_call_rejects_changed_arguments(self):
+        await self.configure()
+        self.orch.set_mcp_tool_policy({"docs/search": "allow"})
+        _, envelope, _ = await self.orch.prepare_operation(
+            "user-a", self.meta, "mcp/tool/call",
+            {"server": "docs", "tool": "search", "arguments": {"q": "x"},
+             "annotations": {"readOnlyHint": True}},
+        )
+        with self.assertRaisesRegex(ExecutionError, "changed after approval"):
+            await self.orch.mcp_tool_call(
+                "user-a", self.meta, "docs", "search", {"q": "DIFFERENT"},
+                envelope=envelope,
+            )
+        self.appserver.mcp_tool_call.assert_not_awaited()
+
+    async def test_carrier_thread_reused_and_rebuilt_after_drop(self):
+        await self.configure()
+        first = await self.orch._carrier.thread_id("ctx")
+        self.assertEqual(first, "thread-1")
+        # Reused without respawn.
+        again = await self.orch._carrier.thread_id("ctx")
+        self.assertEqual(again, "thread-1")
+        self.assertEqual(self.appserver.thread_start.await_count, 1)
+        # Dropping forces a fresh thread on next use.
+        self.appserver.thread_start.return_value = {"thread": {"id": "thread-2"}}
+        await self.orch._carrier.drop("ctx")
+        rebuilt = await self.orch._carrier.thread_id("ctx")
+        self.assertEqual(rebuilt, "thread-2")
+        self.assertEqual(self.appserver.thread_start.await_count, 2)
 
 
 class ExecPolicyContracts(unittest.IsolatedAsyncioTestCase):

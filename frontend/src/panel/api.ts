@@ -29,6 +29,8 @@ export const api = {
   settings: (token: string) => req(token, "/api/settings"),
   oauthMetadataAudit: (token: string) => req(token, "/api/oauth/metadata-audit"),
   mcpTools: (token: string) => req(token, "/api/mcp-tools"),
+  setMcpToolPolicy: (token: string, policies: Record<string, string>) =>
+    req(token, "/api/mcp-tools/policy", { method: "POST", body: JSON.stringify({ policies }) }),
   setSettings: (token: string, kv: Record<string, any>) =>
     req(token, "/api/settings", { method: "POST", body: JSON.stringify(kv) }),
   // app-server
