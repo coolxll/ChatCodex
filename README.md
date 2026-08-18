@@ -20,9 +20,7 @@ Codex，让 ChatGPT 能在你划定的工作区内执行命令、读写文件、
 ### 1. 启动网关
 
 ```bash
-cd backend
-uv sync --locked
-uv run python -m app.main
+./start.sh
 ```
 
 首次启动会自动生成两个密钥并打印在控制台：
