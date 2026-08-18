@@ -47,7 +47,7 @@ def _default_database_path() -> str:
 class Settings:
     # HTTP 监听(本机回环;隧道把公网流量打到这里)
     host: str = _env("CHATCODEX_HOST", "127.0.0.1")
-    port: int = int(_env("CHATCODEX_PORT", "8000"))
+    port: int = int(_env("CHATCODEX_PORT", "18473"))
 
     # 数据库:sqlite:///path 或 postgresql://user:pass@host/db
     database_url: str = (
@@ -89,7 +89,7 @@ class Settings:
         "CHATCODEX_OAUTH_CALLBACK_PROTECTION", "0").lower() in {"1", "true", "yes", "on"}
     # Gateway 的全局公网 HTTPS 根地址，用于内置 OAuth issuer / widget CSP。
     # Secure MCP Tunnel 是独立的 MCP 传输，不改变这个全局地址。
-    public_url: str = _env("CHATCODEX_PUBLIC_URL", "http://127.0.0.1:8000")
+    public_url: str = _env("CHATCODEX_PUBLIC_URL", "http://127.0.0.1:18473")
 
     # 前端构建产物目录(widget 资源);开发期也可内联
     frontend_dist: str = _env(

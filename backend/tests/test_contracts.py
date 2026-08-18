@@ -331,25 +331,30 @@ class SecurityContractTests(unittest.TestCase):
             db.close()
 
     def test_paths_cannot_escape_workspace(self):
-        sm = ExecutionContext(
-            id="1", map_key="m", conversation_id="c", user_id="u",
-            cwd=r"E:\ChatCodex",
-            workspace_roots=json.dumps([r"E:\ChatCodex"]),
-        )
-        orch = SessionOrchestrator(Settings(), object(), object())
-        self.assertTrue(orch._resolve(sm, "backend").lower().endswith("chatcodex\\backend"))
-        with self.assertRaises(SessionError):
-            orch._resolve(sm, r"C:\Windows")
+        with tempfile.TemporaryDirectory() as directory:
+            sm = ExecutionContext(
+                id="1", map_key="m", conversation_id="c", user_id="u",
+                cwd=directory,
+                workspace_roots=json.dumps([directory]),
+            )
+            orch = SessionOrchestrator(Settings(), object(), object())
+            self.assertEqual(
+                orch._resolve(sm, "backend"),
+                os.path.realpath(os.path.join(directory, "backend")),
+            )
+            with self.assertRaises(SessionError):
+                orch._resolve(sm, os.path.join(directory, os.pardir, "outside"))
 
     def test_patch_headers_cannot_escape_workspace(self):
-        sm = ExecutionContext(
-            id="1", map_key="m", conversation_id="c", user_id="u",
-            cwd=r"E:\ChatCodex",
-            workspace_roots=json.dumps([r"E:\ChatCodex"]),
-        )
-        orch = SessionOrchestrator(Settings(), object(), object())
-        with self.assertRaises(SessionError):
-            orch._validate_patch_paths(sm, """*** Begin Patch
+        with tempfile.TemporaryDirectory() as directory:
+            sm = ExecutionContext(
+                id="1", map_key="m", conversation_id="c", user_id="u",
+                cwd=directory,
+                workspace_roots=json.dumps([directory]),
+            )
+            orch = SessionOrchestrator(Settings(), object(), object())
+            with self.assertRaises(SessionError):
+                orch._validate_patch_paths(sm, """*** Begin Patch
 *** Update File: ../outside.txt
 @@
 -a
@@ -605,7 +610,9 @@ class AppServerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         shim = os.path.join(
             os.environ.get("APPDATA", r"C:\Users\test\AppData\Roaming"),
             "npm", "codex.CMD")
-        with patch("app.appserver.resolve.os.path.isfile", return_value=True), \
+        with patch("app.appserver.resolve.sys.platform", "win32"), \
+             patch("app.appserver.resolve.os.path.isabs", return_value=True), \
+             patch("app.appserver.resolve.os.path.isfile", return_value=True), \
              patch("app.appserver.resolve.Path.exists", return_value=True):
             command = resolve_codex_executable(shim)
         self.assertEqual(len(command), 1)
