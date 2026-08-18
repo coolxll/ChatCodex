@@ -13,9 +13,9 @@ start.bat          # Windows
 
 ## 启动后
 
-- **管理面板**:`http://127.0.0.1:8000/` — **所有配置都在这里改**
-- MCP:`http://127.0.0.1:8000/mcp/`(带斜杠)
-- 健康:`http://127.0.0.1:8000/healthz`
+- **管理面板**:`http://127.0.0.1:18473/` — **所有配置都在这里改**
+- MCP:`http://127.0.0.1:18473/mcp/`(带斜杠)
+- 健康:`http://127.0.0.1:18473/healthz`
 
 ## 全部配置都在 Web 面板(不再用环境变量)
 
@@ -47,6 +47,6 @@ start.bat          # Windows
 ## 验证
 
 ```bash
-curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:18473/healthz
 # {"ok":true,"appserver":true,"healthy":true,...}
 ```
