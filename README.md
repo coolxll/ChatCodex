@@ -31,7 +31,7 @@ uv run python -m app.main
 - **MCP Access Token** — 留给 ChatGPT 连接用（见下文）。
 
 > 没装 `uv`？也可以 `pip install fastapi uvicorn mcp websockets` 后用
-> `python -m app.main` 启动；Windows 下直接运行 `backend/start.bat`。
+> `python -m app.main` 启动；Windows 下直接运行仓库根目录的 `start.bat`。
 
 ### 2. 构建前端
 
