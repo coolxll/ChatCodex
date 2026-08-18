@@ -982,7 +982,7 @@ def _target_path_module(platform_name: str):
     target = str(platform_name or "").lower()
     if target == "windows":
         return ntpath
-    if target in {"linux", "darwin", "macos", "unix"}:
+    if target in {"linux", "darwin", "unix"}:
         return posixpath
     raise ExecutionError(
         "unsupported_appserver_platform",
