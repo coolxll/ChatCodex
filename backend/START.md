@@ -3,11 +3,13 @@
 ## 一键启动
 
 ```bash
-cd backend
-pip install fastapi uvicorn mcp websockets   # 只一次
-start.bat          # Windows
-# 或 bash start.sh
+# 在仓库根目录执行
+./start.sh         # macOS / Linux
+# Windows 请运行 start.bat
 ```
+
+脚本会使用 `uv` 按 `uv.lock` 自动准备依赖。没有 `uv` 时可手动进入
+`backend/`，安装依赖后运行 `python -m app.main`。
 
 **不用 set 任何参数。** 首次启动会分别生成 Web Access Token 和 MCP Access Token,持久化后打印在控制台。
 

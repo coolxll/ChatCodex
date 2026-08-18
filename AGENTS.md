@@ -7,7 +7,7 @@
 ## Build, Test, and Development Commands
 
 - `cd backend && uv sync --locked` installs the reproducible Python environment from `uv.lock`.
-- `cd backend && uv run python -m app.main` starts the gateway at `http://127.0.0.1:8000`.
+- `./start.sh` (or root `start.bat` on Windows) starts the gateway at `http://127.0.0.1:18473`.
 - `cd backend && uv run python -m unittest discover -s tests -p "test_*.py"` runs backend contract tests.
 - `cd backend && python tests/auth_http_integration.py` runs the real-process auth/OAuth smoke test.
 - `cd frontend && npm ci` installs the locked frontend dependencies.

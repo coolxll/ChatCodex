@@ -15,14 +15,13 @@ Codex，让 ChatGPT 能在你划定的工作区内执行命令、读写文件、
 
 ## 快速开始
 
-只需要 Python 3.11+ 和 Node.js。
+需要 Python 3.11+ 和 Node.js；使用一键启动脚本时还需要 `uv`。
 
 ### 1. 启动网关
 
 ```bash
-cd backend
-uv sync --locked
-uv run python -m app.main
+./start.sh                  # macOS / Linux
+# Windows 请运行仓库根目录的 start.bat
 ```
 
 首次启动会自动生成两个密钥并打印在控制台：
@@ -31,7 +30,8 @@ uv run python -m app.main
 - **MCP Access Token** — 留给 ChatGPT 连接用（见下文）。
 
 > 没装 `uv`？也可以 `pip install fastapi uvicorn mcp websockets` 后用
-> `python -m app.main` 启动；Windows 下直接运行仓库根目录的 `start.bat`。
+> `python -m app.main` 启动（先进入 `backend/`）；Windows 下直接运行仓库根目录的
+> `start.bat`。
 
 ### 2. 构建前端
 
@@ -45,7 +45,7 @@ npm run build
 
 ### 3. 打开控制台
 
-浏览器访问 **http://127.0.0.1:8000/**，粘贴第 1 步打印的 **Web Access Token** 登录。
+浏览器访问 **http://127.0.0.1:18473/**，粘贴第 1 步打印的 **Web Access Token** 登录。
 
 之后**几乎所有配置都在这个网页里改**，不用再去碰命令行参数。
 
@@ -91,7 +91,7 @@ npm run build
 
 ## 常见问题
 
-**健康检查**：`curl http://127.0.0.1:8000/healthz`，返回 `{"ok":true,...}` 即正常。
+**健康检查**：`curl http://127.0.0.1:18473/healthz`，返回 `{"ok":true,...}` 即正常。
 
 **忘了 Web Access Token？** 重启网关会在控制台重新打印；也可在启动前用环境变量
 `CHATCODEX_WEB_ACCESS_TOKEN` 指定一个固定值。
@@ -110,11 +110,11 @@ Linux/macOS：`$XDG_STATE_HOME/chatcodex/`），可用 `CHATCODEX_DATABASE_URL` 
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `CHATCODEX_HOST` / `CHATCODEX_PORT` | `127.0.0.1:8000` | 监听地址 |
+| `CHATCODEX_HOST` / `CHATCODEX_PORT` | `127.0.0.1:18473` | 监听地址 |
 | `CHATCODEX_WEB_ACCESS_TOKEN` | 自动生成 | 控制台登录 Token |
 | `CHATCODEX_MCP_ACCESS_TOKEN` | 自动生成 | ChatGPT 连接的静态密钥 |
 | `CHATCODEX_MCP_AUTH_MODE` | `token` | `token` / `oauth` / `both` / `noauth` |
-| `CHATCODEX_PUBLIC_URL` | `http://127.0.0.1:8000` | 公网地址（OAuth 需要） |
+| `CHATCODEX_PUBLIC_URL` | `http://127.0.0.1:18473` | 公网地址（OAuth 需要） |
 | `CHATCODEX_DATABASE_URL` | 用户私有目录 | 数据库位置（`sqlite:///` 或 `postgresql://`） |
 | `CHATCODEX_CODEX_COMMAND` | 自动解析 / 下载 | Codex 可执行文件路径 |
 | `CHATCODEX_APPROVAL_TIMEOUT_MS` | `300000` | 审批等待时长（毫秒） |
